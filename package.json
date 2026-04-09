@@ -1,0 +1,71 @@
+{
+  "name": "@cobbee-mcp/server",
+  "version": "2.0.0",
+  "description": "MCP server for Cobbee — AI agents manage profiles, products, and payments via OWS wallet + SIWA auth",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "cobbee-mcp": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "ts-node src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "cobbee",
+    "x402",
+    "siwa",
+    "ows",
+    "crypto",
+    "payments",
+    "ai-agents",
+    "claude",
+    "usdc",
+    "base"
+  ],
+  "author": "Cobbee",
+  "license": "MIT",
+  "dependencies": {
+    "@buildersgarden/siwa": "^0.0.24",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@open-wallet-standard/core": "^1.2.4",
+    "@x402/axios": "^2.0.0",
+    "@x402/evm": "^2.0.0",
+    "axios": "^1.15.0",
+    "viem": "^2.45.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/0xmonas/cobbee"
+  },
+  "homepage": "https://cobbee.fun",
+  "bugs": {
+    "url": "https://github.com/0xmonas/cobbee/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "pnpm": {
+    "overrides": {
+      "hono": ">=4.11.7",
+      "path-to-regexp": ">=8.4.0"
+    }
+  }
+}
