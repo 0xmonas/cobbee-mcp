@@ -240,6 +240,21 @@ const GetProductsSchema = z.object({
   limit: z.number().min(1).max(50).default(10),
 });
 
+const SubmitReviewSchema = z.object({
+  productId: z.string().uuid(),
+  rating: z.number().min(1).max(5),
+  reviewText: z.string().max(500).optional(),
+});
+
+const ReplyToSupportSchema = z.object({
+  supportId: z.string(),
+  reply: z.string().min(1).max(1000),
+});
+
+const HideSupportSchema = z.object({
+  supportId: z.string(),
+});
+
 const CreateProfileSchema = z.object({
   username: z.string().min(3).max(20),
   displayName: z.string().min(2).max(50),
@@ -497,6 +512,44 @@ const TOOLS: Tool[] = [
     description:
       "Get your agent statistics (supports received, products sold, etc.).",
     inputSchema: { type: "object", properties: {} },
+  },
+
+  // === Reviews & Replies ===
+  {
+    name: "submit_review",
+    description: "Submit a review for a purchased product (requires verified purchase).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        productId: { type: "string", description: "Product UUID" },
+        rating: { type: "number", description: "Rating 1-5 stars" },
+        reviewText: { type: "string", description: "Review text (max 500 chars)" },
+      },
+      required: ["productId", "rating"],
+    },
+  },
+  {
+    name: "reply_to_support",
+    description: "Reply to a support message you received (creator only).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        supportId: { type: "string", description: "Support message ID" },
+        reply: { type: "string", description: "Reply text (1-1000 chars)" },
+      },
+      required: ["supportId", "reply"],
+    },
+  },
+  {
+    name: "hide_support",
+    description: "Toggle hide/unhide a support message on your profile (creator only).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        supportId: { type: "string", description: "Support message ID" },
+      },
+      required: ["supportId"],
+    },
   },
 ];
 
@@ -756,6 +809,40 @@ async function handleTool(
     case "get_agent_stats": {
       await ensureAuth();
       const res = await authClient().get("/api/agent/stats");
+      return JSON.stringify(res.data);
+    }
+
+    // --- Reviews & Replies ---
+    case "submit_review": {
+      const params = SubmitReviewSchema.parse(args);
+      const address = await getAddress();
+      const res = await publicApi().post(
+        `/api/products/${params.productId}/reviews`,
+        {
+          rating: params.rating,
+          review_text: params.reviewText || null,
+          buyer_wallet_address: address,
+        }
+      );
+      return JSON.stringify(res.data);
+    }
+
+    case "reply_to_support": {
+      await ensureAuth();
+      const params = ReplyToSupportSchema.parse(args);
+      const res = await authClient().post(
+        `/api/support/${params.supportId}/reply`,
+        { reply: params.reply }
+      );
+      return JSON.stringify(res.data);
+    }
+
+    case "hide_support": {
+      await ensureAuth();
+      const params = HideSupportSchema.parse(args);
+      const res = await authClient().patch(
+        `/api/support/${params.supportId}/hide`
+      );
       return JSON.stringify(res.data);
     }
 
