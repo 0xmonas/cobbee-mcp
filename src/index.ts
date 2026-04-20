@@ -25,12 +25,15 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import {
   signMessage as owsSignMessage,
+  signTypedData as owsSignTypedData,
   getWallet,
 } from "@open-wallet-standard/core";
 import { buildSIWAMessage } from "@buildersgarden/siwa";
 import { createPublicClient, http, formatUnits } from "viem";
 import { base, baseSepolia } from "viem/chains";
 import axios, { type AxiosInstance } from "axios";
+import { wrapAxiosWithPayment, x402Client } from "@x402/axios";
+import { ExactEvmScheme, type ClientEvmSigner } from "@x402/evm";
 import { z } from "zod";
 
 // =============================================================================
@@ -41,9 +44,32 @@ const COBBEE_API_URL = process.env.COBBEE_API_URL || "https://cobbee.fun";
 const OWS_WALLET_NAME = process.env.OWS_WALLET_NAME;
 const OWS_PASSPHRASE = process.env.OWS_PASSPHRASE;
 const NETWORK = process.env.NETWORK || "base";
-const AGENT_ID = parseInt(process.env.AGENT_ID || "1", 10);
 
-const USDC_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+// AGENT_ID only required for SIWA authentication (profile mgmt, product CRUD).
+// Public tools (search, discover) and payment tools work without it.
+// Validated lazily inside authenticate() — see getAgentId().
+const AGENT_ID_RAW = process.env.AGENT_ID;
+
+function getAgentId(): number {
+  if (!AGENT_ID_RAW) {
+    throw new Error(
+      "AGENT_ID env var is required for this operation. " +
+      "Register your agent on ERC-8004 (8004scan.io) and set AGENT_ID."
+    );
+  }
+  const id = parseInt(AGENT_ID_RAW, 10);
+  if (isNaN(id) || id < 1) {
+    throw new Error("AGENT_ID must be a positive integer");
+  }
+  return id;
+}
+
+// USDC addresses per network (CAIP-2: eip155:{chainId})
+const USDC_ADDRESSES: Record<string, `0x${string}`> = {
+  base: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  "base-sepolia": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+};
+
 const USDC_ABI = [
   {
     inputs: [{ name: "account", type: "address" }],
@@ -92,15 +118,44 @@ async function signMessageOWS(message: string): Promise<string> {
   return result.signature;
 }
 
+/**
+ * Creates an x402 ClientEvmSigner backed by OWS.
+ * Private key never leaves OWS — signing happens in an isolated process.
+ */
+async function createOWSx402Signer(): Promise<ClientEvmSigner> {
+  const address = await getAddress();
+  const config = getWalletConfig();
+  return {
+    address: address as `0x${string}`,
+    signTypedData: async (msg) => {
+      const typedDataJson = JSON.stringify({
+        domain: msg.domain,
+        types: msg.types,
+        primaryType: msg.primaryType,
+        message: msg.message,
+      });
+      const result = owsSignTypedData(
+        config.wallet,
+        "evm",
+        typedDataJson,
+        config.passphrase
+      );
+      return result.signature as `0x${string}`;
+    },
+  };
+}
+
 function getNetworkConfig() {
   const isTestnet = NETWORK === "base-sepolia";
+  const rpcUrl = isTestnet
+    ? process.env.BASE_SEPOLIA_RPC_URL || "https://sepolia.base.org"
+    : process.env.BASE_RPC_URL || "https://mainnet.base.org";
   return {
     chain: isTestnet ? baseSepolia : base,
     chainId: isTestnet ? 84532 : 8453,
     networkId: isTestnet ? "eip155:84532" : "eip155:8453",
-    rpcUrl: isTestnet
-      ? "https://sepolia.base.org"
-      : "https://mainnet.base.org",
+    rpcUrl,
+    usdcAddress: USDC_ADDRESSES[NETWORK] ?? USDC_ADDRESSES.base,
   };
 }
 
@@ -109,6 +164,7 @@ function getNetworkConfig() {
 // =============================================================================
 
 async function authenticate(): Promise<void> {
+  const agentId = getAgentId();
   const address = await getAddress();
   const { chainId } = getNetworkConfig();
 
@@ -117,7 +173,7 @@ async function authenticate(): Promise<void> {
   // Step 1: Get nonce
   const nonceRes = await axios.post(`${COBBEE_API_URL}/api/auth/agent/nonce`, {
     address,
-    agentId: AGENT_ID,
+    agentId,
   });
 
   if (!nonceRes.data.success) {
@@ -134,7 +190,7 @@ async function authenticate(): Promise<void> {
     domain,
     address,
     uri,
-    agentId: AGENT_ID,
+    agentId,
     agentRegistry,
     chainId,
     nonce,
@@ -158,7 +214,7 @@ async function authenticate(): Promise<void> {
   siwaReceipt = verifyRes.data.receipt;
   receiptExpiresAt = new Date(verifyRes.data.expiresAt);
 
-  console.error(`✅ Authenticated! Agent ID: ${AGENT_ID}`);
+  console.error(`✅ Authenticated! Agent ID: ${agentId}`);
   console.error(`   Address: ${address}`);
   console.error(`   Receipt expires: ${receiptExpiresAt.toISOString()}`);
 }
@@ -206,6 +262,29 @@ function publicApi(): AxiosInstance {
     baseURL: COBBEE_API_URL,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+/**
+ * Creates an axios instance wrapped with x402 payment handling.
+ * Automatically handles HTTP 402 responses by signing EIP-3009 payments via OWS.
+ * Uses ExactEvmScheme (USDC transferWithAuthorization on Base).
+ */
+let cachedX402Api: AxiosInstance | null = null;
+async function x402Api(): Promise<AxiosInstance> {
+  if (cachedX402Api) return cachedX402Api;
+  const signer = await createOWSx402Signer();
+  const client = new x402Client().register(
+    "eip155:*",
+    new ExactEvmScheme(signer)
+  );
+  cachedX402Api = wrapAxiosWithPayment(
+    axios.create({
+      baseURL: COBBEE_API_URL,
+      headers: { "Content-Type": "application/json" },
+    }),
+    client
+  );
+  return cachedX402Api;
 }
 
 // =============================================================================
@@ -619,10 +698,10 @@ async function handleTool(
 
     case "get_wallet_balance": {
       const address = await getAddress();
-      const { chain, rpcUrl } = getNetworkConfig();
+      const { chain, rpcUrl, usdcAddress } = getNetworkConfig();
       const client = createPublicClient({ chain, transport: http(rpcUrl) });
       const balance = await client.readContract({
-        address: USDC_ADDRESS as `0x${string}`,
+        address: usdcAddress,
         abi: USDC_ABI,
         functionName: "balanceOf",
         args: [address as `0x${string}`],
@@ -644,20 +723,24 @@ async function handleTool(
     // --- Payment (x402) ---
     case "send_coffee": {
       const params = SendCoffeeSchema.parse(args);
+      const api = await x402Api();
+
       const creatorRes = await publicApi().get(
         `/api/creators/${params.username}`
       );
       const creator = creatorRes.data.creator || creatorRes.data;
       const totalAmount = creator.coffee_price * params.coffeeCount;
 
-      const feeRes = await publicApi().post("/api/platform/fee", {
+      // Platform fee — x402 interceptor signs EIP-3009 via OWS on 402 response
+      const feeRes = await api.post("/api/platform/fee", {
         support_amount: totalAmount,
       });
       if (!feeRes.data.success || !feeRes.data.feeReceipt?.txHash) {
         throw new Error("Platform fee payment failed");
       }
 
-      const coffeeRes = await publicApi().post("/api/support/buy", {
+      // Support payment — also x402, signs payment to creator wallet
+      const coffeeRes = await api.post("/api/support/buy", {
         creator_id: creator.id,
         coffee_count: params.coffeeCount,
         message: params.message || "",
@@ -678,6 +761,7 @@ async function handleTool(
     case "buy_product": {
       const params = BuyProductSchema.parse(args);
       const address = await getAddress();
+      const api = await x402Api();
 
       const productRes = await publicApi().get(
         `/api/products/public/${params.productId}`
@@ -687,14 +771,16 @@ async function handleTool(
         ? params.tipAmount ?? 0
         : product.price;
 
-      const feeRes = await publicApi().post("/api/platform/fee", {
+      // Platform fee — x402 interceptor signs EIP-3009 via OWS on 402 response
+      const feeRes = await api.post("/api/platform/fee", {
         support_amount: effectivePrice,
       });
       if (!feeRes.data.success || !feeRes.data.feeReceipt?.txHash) {
         throw new Error("Platform fee payment failed");
       }
 
-      const buyRes = await publicApi().post("/api/shop/buy", {
+      // Product purchase — also x402 (unless free PWYW with platform fee only)
+      const buyRes = await api.post("/api/shop/buy", {
         product_id: params.productId,
         buyer_name: params.buyerName,
         buyer_wallet_address: address,

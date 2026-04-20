@@ -1,6 +1,6 @@
 {
   "name": "@cobbee-mcp/server",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": "MCP server for Cobbee — AI agents manage profiles, products, and payments via OWS wallet + SIWA auth",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -33,8 +33,8 @@
     "@buildersgarden/siwa": "^0.0.24",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@open-wallet-standard/core": "^1.2.4",
-    "@x402/axios": "^2.0.0",
-    "@x402/evm": "^2.0.0",
+    "@x402/axios": "^2.9.0",
+    "@x402/evm": "^2.9.0",
     "axios": "^1.15.0",
     "viem": "^2.45.0",
     "zod": "^3.25.0"
